@@ -5,7 +5,9 @@ Android device: it launches instead of crashing, it plays at a manageable speed,
 it fills the screen, and it works with a gamepad.
 
 You supply your own copy of the APK. This repository contains no game code and no
-game assets — only the patch logic.
+game assets — only the patch logic. If you also drop the game's resource folder
+(`resources.csr` and `SE/`) into `inputs/`, the patcher packs it into the APK, so
+the result installs and plays as a single file.
 
 ```
 python patch.py            # needs Python 3.10+ and a JDK 17+
@@ -25,14 +27,25 @@ external zip tool, nothing installed system-wide.
 ## Use
 
 1. Put the original APK in `inputs/`.
+
+   Optionally also put the game's resource folder there — either its contents
+   (`resources.csr` + `SE/`) or the whole folder as `Com2uS/com.com2us.caligo/`.
+   The patcher finds it and packs it in; skip this and you have to copy the folder
+   onto the device yourself, exactly like the stock game.
 2. `python patch.py --check` — verifies the config, finds Java and the tools,
-   confirms the APK is the expected game. Changes nothing.
+   confirms the APK is the expected game, and says whether the resource folder was
+   found. Changes nothing.
 3. `python patch.py` — builds `outputs/<name>_patched_<timestamp>.apk`.
 4. Install it. If an older patched build is installed, uninstall it first (the
    signature differs, so Android refuses the upgrade — and uninstalling deletes
    the game's saves, so back them up if they matter).
 
 All options live in `config.yaml`, which is commented throughout.
+
+With `input.bundle_data` on (the default) the patched game never touches
+`/sdcard/Com2uS/` — you can delete that folder. The first launch unpacks about
+9 MB into the app's own storage instead: it takes a second, needs no permissions,
+and is skipped from then on.
 
 ## What it changes
 
@@ -53,6 +66,7 @@ Optional (on by default):
 | Touch pad auto-hide | the on-screen D-pad covers the game; it hides after the first physical key and returns when you touch the screen |
 | Gamepad mapping | the stock key table only knows old feature-phone keys, so a controller does nothing. Bindings are plain names in `config.yaml` |
 | Sound effects | they are loaded from a path the app no longer owns; they load through a file descriptor instead |
+| Bundled game data | the resources normally live in `/sdcard/Com2uS/<package>/`, which you have to copy by hand. With `input.bundle_data` on, the APK carries them and unpacks them into the app's own directory on first launch, so one install is enough |
 | Analytics disabled | the endpoint has been dead for years |
 
 ## What it does not do

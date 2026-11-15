@@ -13,6 +13,7 @@ from caligo import keys, toolchain, yamlite
 from caligo.smali import StageError, Tree
 
 import patches.autohide
+import patches.bundled
 import patches.core
 import patches.fullscreen
 import patches.jni_class
@@ -28,10 +29,11 @@ STAGES = [
     ('controller, frame cap, sound', patches.core),
     ('touch pad handling', patches.autohide),
     ('full screen', patches.fullscreen),
+    ('bundled game data (optional)', patches.bundled),
 ]
 
 DEFAULTS = {
-    'input': {'apk': 'auto'},
+    'input': {'apk': 'auto', 'bundle_data': 'auto'},
     'device': {'target_sdk': 5, 'min_sdk': 9},
     'patches': {'fullscreen': True, 'touch_pad': 'autohide', 'soundpool_fd_fix': True,
                 'disable_flurry': True, 'diagnostics': False, 'ms_per_frame': 40},
@@ -94,6 +96,16 @@ def _merge(defaults, user, path):
 
 
 def _validate(cfg):
+    mode = cfg['input']['bundle_data']
+    if isinstance(mode, bool):
+        mode = 'true' if mode else 'false'
+    else:
+        mode = str(mode).strip().lower()
+    if mode not in ('auto', 'true', 'false'):
+        raise ConfigError('input.bundle_data must be auto, true or false (got %r)'
+                          % (cfg['input']['bundle_data'],))
+    cfg['input']['bundle_data'] = mode
+
     dev = cfg['device']
     for name in ('target_sdk', 'min_sdk'):
         val = dev[name]
@@ -171,6 +183,125 @@ def resolve_input(root, cfg):
     return found[0]
 
 
+NOT_FOUND = 'not found'
+CSR_MAGIC = b'CSR\x01'
+
+# where the game's resource folder is looked for, in this order. The folder is what
+# the stock game expects on /sdcard; the user has usually dropped it next to the APK.
+BUNDLE_CANDIDATES = ['', 'Com2uS/com.com2us.caligo', 'com.com2us.caligo', 'Com2uS']
+
+
+def _ci_join(base, rel):
+    """Resolve rel under base, tolerating case differences.
+
+    Nobody agrees on how to spell the folder: the APK's own strings say "Com2uS",
+    the package is "com.com2us.caligo", and on a case-insensitive Windows filesystem
+    either spelling ends up on disk. A silent miss here would just mean "not
+    bundled", which is hard to diagnose, so match names case-insensitively.
+    """
+    cur = base
+    for part in rel.split('/'):
+        if not part:
+            continue
+        if not os.path.isdir(cur):
+            return None
+        exact = os.path.join(cur, part)
+        if os.path.isdir(exact):
+            cur = exact
+            continue
+        low = part.lower()
+        hits = sorted(n for n in os.listdir(cur)
+                      if n.lower() == low and os.path.isdir(os.path.join(cur, n)))
+        if not hits:
+            return None
+        cur = os.path.join(cur, hits[0])
+    return cur
+
+
+def _check_bundle(dirpath):
+    """Found must mean usable: a half-copied folder bundles into a black screen.
+
+    Returns (bundle, why). `why` is None when the directory holds nothing that
+    looks like the game data (an ordinary "not here"), and a reason when it does
+    look like an attempt that would not work.
+    """
+    csr = os.path.join(dirpath, 'resources.csr')
+    if not os.path.isfile(csr):
+        return None, None
+    size = os.path.getsize(csr)
+    if size < 1024:
+        return None, 'resources.csr is only %d bytes (truncated copy?)' % size
+    with open(csr, 'rb') as f:
+        head = f.read(4)
+    if head != CSR_MAGIC:
+        return None, ('resources.csr starts with %s, expected the package magic %s'
+                      % (head.hex(' '), CSR_MAGIC.hex(' ')))
+    se = os.path.join(dirpath, 'SE')
+    if not os.path.isdir(se):
+        return None, 'resources.csr is there but SE/ is missing'
+    wavs = [n for n in os.listdir(se) if n.lower().endswith('.wav')]
+    if not wavs:
+        return None, 'SE/ holds no .wav files'
+    return {'dir': dirpath, 'csr': size, 'se': len(wavs)}, '%d wavs' % len(wavs)
+
+
+def find_bundle(root):
+    """Every candidate directory, with the verdict and reason for each."""
+    base = os.path.join(root, 'inputs')
+    report = []
+    for rel in BUNDLE_CANDIDATES:
+        shown = rel or 'inputs/ (the files directly)'
+        if rel:
+            path = _ci_join(base, rel)
+        else:
+            path = base if os.path.isdir(base) else None
+        if not path:
+            report.append((shown, None, NOT_FOUND))
+            continue
+        bundle, why = _check_bundle(path)
+        if bundle:
+            bundle['rel'] = rel or 'inputs'
+        report.append((shown, bundle, why if why else NOT_FOUND))
+    return report
+
+
+def bundle_mode(cfg):
+    return cfg['input']['bundle_data']
+
+
+def resolve_bundle(root, cfg):
+    """auto = bundle when found, true = require it, false = never."""
+    mode = bundle_mode(cfg)
+    report = find_bundle(root)
+    valid = [r for r in report if r[1]]
+    broken = [r for r in report if r[1] is None and r[2] != NOT_FOUND]
+
+    if mode == 'false':
+        print('  game data : not bundled (input.bundle_data is false)')
+        return None
+
+    if not valid:
+        if mode == 'true':
+            lines = '\n'.join('    %-28s %s' % (shown, why) for shown, _, why in report)
+            raise ConfigError(
+                'input.bundle_data is true, but no usable game data was found under\n'
+                'inputs/. Looked in:\n%s\n'
+                '  Expected resources.csr (6.0 MB, package magic %s) and SE/*.wav.\n'
+                '  Set input.bundle_data: false to build without it.'
+                % (lines, CSR_MAGIC.hex(' ')))
+        for shown, _, why in broken:
+            warn('%s looks like the game data but cannot be used: %s' % (shown, why))
+        print('  game data : %s, not bundled (input.bundle_data is auto)' % NOT_FOUND)
+        return None
+
+    bundle = valid[0][1]
+    if len(valid) > 1:
+        warn('game data found in %d places; using %s' % (len(valid), valid[0][0]))
+    print('  game data : %s - resources.csr %.1f MB + %d wavs (will be bundled)'
+          % (bundle['rel'], bundle['csr'] / (1024.0 * 1024.0), bundle['se']))
+    return bundle
+
+
 def output_path(root, input_apk):
     base = os.path.join(root, 'inputs')
     rel = os.path.relpath(input_apk, base)
@@ -206,10 +337,11 @@ def apk_facts(path):
 
 # ---------------------------------------------------------------------- stage
 class Ctx:
-    def __init__(self, tree, lib, config):
+    def __init__(self, tree, lib, config, bundle=None):
         self.tree = tree
         self.lib = lib
         self.config = config
+        self.bundle = bundle
 
     def note(self, msg):
         print('    %s' % msg)
@@ -246,6 +378,7 @@ def run(root, args):
             ('fullscreen', 'touch_pad', 'soundpool_fd_fix', 'disable_flurry', 'diagnostics')))
         print('  controller: %s' % ('on, %d bindings' % len(cfg['controller']['bindings'])
                                     if cfg['controller']['enabled'] else 'off'))
+        print('  bundle    : %s' % bundle_mode(cfg))
 
     apk = resolve_input(root, cfg)
     out = output_path(root, apk)
@@ -253,6 +386,7 @@ def run(root, args):
     if args.check or args.dry_run:
         facts = apk_facts(apk)
         print('  %d entries, %s' % (facts['entries'], _size(apk)))
+    bundle = resolve_bundle(root, cfg)
 
     if cfg['device']['target_sdk'] != 5:
         warn('device.target_sdk is %d; only 5 has been tested. Behaviour changes at '
@@ -295,7 +429,7 @@ def run(root, args):
     with open(libpath, 'rb') as f:
         lib = bytearray(f.read())
 
-    ctx = Ctx(tree, lib, cfg)
+    ctx = Ctx(tree, lib, cfg, bundle)
     print('\n== patches')
     for name, module in STAGES:
         print('  [%s]' % name)
@@ -383,6 +517,9 @@ def _report(root, src, out, cfg):
         print('        adb install --bypass-low-target-sdk-block "%s"' % os.path.basename(out))
     print('\n  note: the game is 32-bit ARM only. Devices without 32-bit support')
     print('        (most recent flagships) cannot run it at all.')
+    if cfg['input']['bundle_data'] != 'false':
+        print('  note: with input.bundle_data on, this APK contains the game\'s own')
+        print('        resource files. Keep it for yourself - do not redistribute it.')
     lines = [l for l in _WARNINGS]
     if lines:
         print('\n  warnings from this run:')

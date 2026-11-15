@@ -1,6 +1,6 @@
 # inputs and outputs are the user's own files - never committed
-inputs/*.apk
-inputs/**/*.apk
+inputs/*
+!inputs/README.md
 outputs/
 build/
 tools/*.jar

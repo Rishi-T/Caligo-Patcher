@@ -135,6 +135,53 @@ The flag is a word appended to `.bss` (grow `p_memsz` and the `SHT_NOBITS` secti
 size by 0x100), so it starts zeroed and lives in the same segment as everything
 else the patch touches.
 
+## Where the game keeps its files
+
+One function builds every path the engine uses: `File::GetFullPathName`
+(`0xC09C4`, four arguments - name, out, out-len, type). It picks a format string
+from a six-entry jump table (`0xEFC20`) and `snprintf`s into the caller's buffer:
+
+| type | format | target |
+|---|---|---|
+| 3 | `/sdcard/Com2uS/%s/%s` @ `0xEFC74` | external base dir: `resources.csr`, `SE/*.wav` |
+| 0,1,2,4 | `/sdcard/Com2uS/%s/lib/[%s/]lib%s.so` and `/data/data/%s/lib/...` | per-file shared-library overrides |
+| 5 | `/data/data/%s/%s` @ `0xED698` | app-private files (saves, texture store, ...) |
+
+In every case the varargs are `(jGetPackageName(), name)`, so the format strings
+differ only in their prefixes - which is what makes relocating them cheap: the
+literal-pool word that selects type 3's format sits at `0xC0B38`, and pointing it
+at the `/data/data/%s/%s` string moves the whole resource tree into the app's own
+directory. One 32-bit edit, no new code.
+
+Two traps:
+
+* **The literal is GOT-relative, not absolute.** `0xC0B38` holds
+  `format - 0x102A38`, and the code does `ldr rX,[pc,#n]; add rX,sb` with `sb` =
+  GOT base. An absolute address would be wrong as soon as the loader picks a
+  different base. Searching for `0x0EFC74` anywhere in the file finds nothing;
+  searching for `0xFFFED23C` finds the one site.
+* **The engine mmaps `resources.csr`** (`MMappedFile::GetPointer`), so it needs a
+  real file at a real path. An APK asset cannot be mmapped, hence the first-launch
+  extraction into `getFilesDir().getParent()` rather than reading from `assets/`.
+
+`SoundManager` builds the sound-effect path in Java (`"/sdcard/Com2uS/"` +
+`packageName` + `"/SE/"`), so the three constants there change to `"/data/data/"`
+to match.
+
+Carrying the data inside the APK therefore means unpacking it on first launch
+(`BundledData.ensure`, called from `WrapperActivity.onCreate` before the engine
+starts). Two details make that safe: `resources.csr` is copied to
+`resources.csr.new` and renamed over the destination only if it has bytes, and a
+separate `.bundle-ok` marker is written last, so an interrupted copy retries on
+the next launch instead of leaving a 0-byte package that the engine will trust.
+
+The two branches that matter are easy to invert, and both were wrong in the first
+build: `File.exists()` returns **1** for "present", so *skipping* work needs
+`if-nez` (an `if-eqz` there extracts only when the file already exists), and the
+copy loop must continue while `read()` is positive (`InputStream.read` returns
+`-1`, never `0`, at the end, so `if-gt ... :done` exits before the first write).
+The symptom of both is identical - an empty file and a cheerful success log.
+
 ## Inputs the patcher relies on
 
 The exact anchors in the stock 1.0.4 smali (`package com.com2us.caligo`,

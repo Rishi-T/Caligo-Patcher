@@ -18,6 +18,20 @@
 input:
   apk: auto                  # auto = the single *.apk in inputs/
                              # otherwise a path, absolute or relative to this file
+  bundle_data: auto          # auto   = pack the game's resource folder into the APK
+                             #          if it is found under inputs/ (see below)
+                             # true   = require it; fail if it is missing
+                             # false  = never; the game then needs the folder copied
+                             #          onto the device by hand (stock behaviour)
+                             #
+                             # What gets packed: resources.csr and SE/*.wav, looked
+                             # for in inputs/, inputs/Com2uS/com.com2us.caligo/,
+                             # inputs/com.com2us.caligo/ and inputs/Com2uS/
+                             # (case-insensitive). The patched game then keeps them
+                             # in its own data directory and unpacks them on first
+                             # launch, so one install is enough. The result contains
+                             # game data: keep it to yourself, do not redistribute it.
+                             # Requires ~9 MB more in the APK and one copy on first run.
 
 device:
   target_sdk: 5              # 5 = what all testing used, and the original value.
