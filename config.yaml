@@ -1,0 +1,94 @@
+# Caligo Patcher - configuration
+#
+# This is the only file you normally need to edit. Every setting is validated
+# before anything is touched; a typo is an error, never a silent default.
+#
+# ALWAYS APPLIED (no switch, the game does not run without them):
+#   * Java class handle fix   - the engine calls the Java side through a cached
+#     class pointer that the library never initialises. Old Dalvik silently
+#     returned "no such method"; modern ART crashes inside the class loader.
+#   * Telephony permission fix - the game reads the device id / phone number at
+#     startup, which throws on Android 10+ even with READ_PHONE_STATE granted.
+#   * Manifest rework         - minSdk/targetSdk, legacy storage flags,
+#     extractNativeLibs, hardware acceleration.
+#   * Frame cap (ms_per_frame) - the engine advances one game tick per rendered
+#     frame and has no cap of its own, so on a 60 or 120 Hz display the game
+#     runs 2x or 4x too fast.
+
+input:
+  apk: auto                  # auto = the single *.apk in inputs/
+                             # otherwise a path, absolute or relative to this file
+
+device:
+  target_sdk: 5              # 5 = what all testing used, and the original value.
+                             # ANY other value triggers a warning: the behaviour
+                             # changes at 23+ (runtime permissions, scoped
+                             # storage, inset handling) have never been tested
+                             # with these fixes.
+                             # Note for newer phones: Android 14 refuses to
+                             # INSTALL an app with targetSdk < 23 and Android 15
+                             # requires >= 24 (adb can bypass it with
+                             # `adb install --bypass-low-target-sdk-block`).
+  min_sdk: 9                 # 9 = what all testing used (the original declares 5)
+
+patches:
+  # --- one-line switches -----------------------------------------------------
+  fullscreen: true           # hide the navigation bar and the side gesture
+                             # panels; without this the top 55 px of the screen
+                             # is a black band because the engine sizes itself
+                             # from the app area instead of the panel
+  touch_pad: autohide        # autohide | always_hidden | always_visible
+                             # autohide = gone after the first physical key,
+                             #           back as soon as the screen is touched
+  soundpool_fd_fix: true     # sound effects are loaded from a path the app no
+                             # longer owns; load them through a FileDescriptor
+  disable_flurry: true       # dead analytics endpoint; skips startup threads
+                             # and HTTP calls that can never succeed
+  diagnostics: false         # extra Log.i breadcrumbs for support builds
+  ms_per_frame: 40           # MANDATORY. Stock has no cap, so a 60/120 Hz
+                             # display runs the game that much faster. 40 ms ~
+                             # 25 fps (tested); 45 is slightly slower, possibly
+                             # closer to original. Integer only (33/40/45/50).
+
+controller:
+  # false = leave the stock key table alone (a gamepad then does nothing, the
+  # game only understands the old feature-phone keys)
+  enabled: true
+  # Physical button -> game action. Buttons:
+  #   dpad_up dpad_down dpad_left dpad_right
+  #   a b x y  l1 r1 l2 r2  start select  thumbl thumbr
+  # Actions:
+  #   up down left right  action cancel  charge menu info
+  #   ability_1 ability_2 ability_3 ability_4 ability_5
+  # If your pad reports a different layout, just change the action on the right.
+  bindings:
+    dpad_up: up
+    dpad_down: down
+    dpad_left: left
+    dpad_right: right
+    a: action
+    b: cancel
+    x: charge                # hold to charge the gauntlet, release to fire
+    y: ability_5
+    l1: ability_1
+    l2: ability_2
+    r1: ability_3
+    r2: ability_4
+    start: menu
+    select: info
+    # thumbl: null           # stick clicks are left free
+    # thumbr: null
+
+signing:
+  keystore: signing/caligo.jks   # generated on first run if it does not exist
+  alias: caligo
+  store_pass: caligo123
+  key_pass: caligo123
+
+runtime:
+  java: null                 # null = $JAVA_HOME, then PATH.
+                             # Or point at a JDK you extracted yourself, e.g.
+                             # C:/Users/you/Downloads/jdk-21.0.2+13/bin/java.exe
+  apktool: null              # null = tools/, then $APKTOOL, then PATH
+  signer: null               # null = tools/, then PATH
+  keep_decoded: false        # keep build/<name>/decoded for inspection

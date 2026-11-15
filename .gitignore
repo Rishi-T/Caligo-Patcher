@@ -1,0 +1,16 @@
+# inputs and outputs are the user's own files - never committed
+inputs/*.apk
+inputs/**/*.apk
+outputs/
+build/
+tools/*.jar
+tools/manifest.json
+signing/
+
+# python
+__pycache__/
+*.pyc
+
+# os noise
+Thumbs.db
+.DS_Store
